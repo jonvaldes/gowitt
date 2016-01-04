@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/boltdb/bolt"
+	"html"
 	"net/url"
 	"strconv"
 )
@@ -44,7 +45,7 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	if W.Display == nil {
 		return XWindow{}, errors.New("Can't open display")
 	}
-	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 1, 1, C.uint(width), C.uint(height), 0, 0, 0xFFFFFF)
+	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 1, 1, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
 	C.XMapWindow(W.Display, W.Window)
 	C.XFlush(W.Display)
 
@@ -64,9 +65,9 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	W.FontDraw = C.XftDrawCreate(W.Display, C.Drawable(W.Window), C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0))
 
 	var color C.XRenderColor
-	color.red = 0
-	color.green = 0
-	color.blue = 0
+	color.red = 0xAFFF
+	color.green = 0xAFFF
+	color.blue = 0xAFFF
 	color.alpha = 65535
 	C.XftColorAllocValue(W.Display, C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0), &color, &W.ColorBlack)
 
@@ -81,36 +82,46 @@ func CreateXWindow(width, height int) (XWindow, error) {
 
 var tweetsList []string
 
-func RedrawWindow(W XWindow) {
-	var Rect C.PangoRectangle
-	yPos := 1000
+func PixelsToPango(u float64) C.int {
+	return C.pango_units_from_double(C.double(u))
+}
 
-	C.pango_layout_set_width(W.Layout, C.pango_units_from_double(800.0))
+func PangoToPixels(u C.int) float64 {
+	return float64(C.pango_units_to_double(u))
+}
+
+func PangoRectToPixels(P *C.PangoRectangle) (x, y, w, h float64) {
+	return float64(C.pango_units_to_double(P.x)),
+		float64(C.pango_units_to_double(P.y)),
+		float64(C.pango_units_to_double(P.width)),
+		float64(C.pango_units_to_double(P.height))
+}
+
+func RedrawWindow(W XWindow) {
+
+	var Attribs C.XWindowAttributes
+	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
+
+	var Rect C.PangoRectangle
+	yPos := 10.0
+
+	WindowWidth := Attribs.width
+	C.XSetForeground(W.Display, W.GraphicsContext, 0x303030)
+	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-20)))
 
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
 		C.pango_layout_set_text(W.Layout, C.CString(t), -1)
 		C.pango_layout_get_extents(W.Layout, nil, &Rect)
-		C.pango_xft_render_layout(W.FontDraw, &W.ColorBlack, W.Layout, 1000, C.int(yPos))
-		yPos += 10000 + int(Rect.height)
-	}
-}
 
-func initDB() (*bolt.DB, error) {
-	DB, err := bolt.Open("tweets.db", 0777, nil)
-	if err != nil {
-		return nil, err
-	}
-	Tx, err := DB.Begin(true)
+		_, ry, _, rh := PangoRectToPixels(&Rect)
+		ry += yPos - 2
+		rh += 2
+		C.XFillRectangle(W.Display, C.Drawable(W.Window), W.GraphicsContext, 5, C.int(ry), C.uint(WindowWidth-10), C.uint(rh))
 
-	if _, err = Tx.CreateBucketIfNotExists([]byte("tweets")); err != nil {
-		return nil, err
+		C.pango_xft_render_layout(W.FontDraw, &W.ColorBlack, W.Layout, C.int(PixelsToPango(10)), C.int(PixelsToPango(yPos)))
+		yPos += 10 + PangoToPixels(Rect.height)
 	}
-
-	if err := Tx.Commit(); err != nil {
-		return nil, err
-	}
-	return DB, err
 }
 
 func main() {
@@ -123,12 +134,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	//getTwitterData(DB)
+
+	getTwitterData(DB)
 	tweetsList, err = regenerateViewData(DB, 20)
 	if err != nil {
 		panic(err)
 	}
-	//tweetsList = []string{"مرحبا بالعالم", "niño\nmalo", "我的儿子是个女孩"}
 	RedrawWindow(window)
 
 	var report C.XEvent
@@ -148,35 +159,22 @@ func main() {
 }
 
 func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
-	var Result []string
-	Tx, err := DB.Begin(false)
+	tweets, err := getLastNTweets(DB, MaxTweets)
 	if err != nil {
 		return []string{}, err
 	}
-	Bucket := Tx.Bucket([]byte("tweets"))
-	Cursor := Bucket.Cursor()
-	k, v := Cursor.Last()
-	for i := 0; i < MaxTweets; i++ {
-		if k == nil {
-			break
-		}
-		var tweet anaconda.Tweet
-		if err := json.Unmarshal(v, &tweet); err != nil {
-			return []string{}, err
-		}
-		text := tweet.User.Name
-		if tweet.RetweetedStatus != nil {
+	var Result []string
+
+	for _, t := range tweets {
+		text := t.User.Name
+		if t.RetweetedStatus != nil {
 			text += " -Retweeted- "
-			text += tweet.RetweetedStatus.User.Name + " -- " + tweet.RetweetedStatus.Text
+			text += t.RetweetedStatus.User.Name + " -- " + t.RetweetedStatus.Text
 
 		} else {
-			text += " -- " + tweet.Text
+			text += " -- " + t.Text
 		}
-		Result = append(Result, text)
-		k, v = Cursor.Prev()
-	}
-	if err := Tx.Rollback(); err != nil {
-		return []string{}, err
+		Result = append(Result, html.UnescapeString(text))
 	}
 	return Result, nil
 }
