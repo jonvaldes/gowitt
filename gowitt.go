@@ -48,6 +48,7 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	}
 	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 1, 1, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
 	C.XMapWindow(W.Display, W.Window)
+	C.XStoreName(W.Display, W.Window, C.CString("gowitt"))
 	C.XFlush(W.Display)
 
 	C.XSelectInput(W.Display, W.Window, C.ExposureMask|C.KeyPressMask|C.ButtonPressMask)
@@ -66,9 +67,9 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	W.FontDraw = C.XftDrawCreate(W.Display, C.Drawable(W.Window), C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0))
 
 	var color C.XRenderColor
-	color.red = 0xAFFF
-	color.green = 0xAFFF
-	color.blue = 0xAFFF
+	color.red = 0xCFFF
+	color.green = 0xCFFF
+	color.blue = 0xCFFF
 	color.alpha = 65535
 	C.XftColorAllocValue(W.Display, C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0), &color, &W.ColorBlack)
 
@@ -129,7 +130,7 @@ func RedrawWindow(W XWindow) {
 
 		_, ry, _, rh := PangoRectToPixels(&Rect)
 		ry += yPos - 2
-		rh += 2
+		rh += 4
 		C.XFillRectangle(W.Display, C.Drawable(W.Window), W.GraphicsContext, 5, C.int(ry), C.uint(WindowWidth-10), C.uint(rh))
 
 		C.pango_xft_render_layout(W.FontDraw, &W.ColorBlack, W.Layout, C.int(PixelsToPango(10)), C.int(PixelsToPango(yPos)))
@@ -181,7 +182,7 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 	for _, t := range tweets {
 		var text string
 		if t.RetweetedStatus != nil {
-			text = "<i><small>" + html.UnescapeString(t.User.Name) + "</small></i> ⇄ <b>" +
+			text = "<i><small>" + html.UnescapeString(t.User.Name) + "</small></i> <span color='#5C5'>⇄</span> <b>" +
 				t.RetweetedStatus.User.Name + "</b>\n" +
 				html.UnescapeString(t.RetweetedStatus.Text)
 
