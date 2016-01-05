@@ -36,6 +36,7 @@ type XWindow struct {
 	// -- Pango
 	PangoContext *C.PangoContext
 	Layout       *C.PangoLayout
+	AttrList     *C.PangoAttrList
 }
 
 func CreateXWindow(width, height int) (XWindow, error) {
@@ -74,8 +75,10 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	// Pango
 	W.PangoContext = C.pango_xft_get_context(W.Display, 0)
 	W.Layout = C.pango_layout_new(W.PangoContext)
-	FontDesc := C.pango_font_description_from_string(C.CString("Sans"))
+	FontDesc := C.pango_font_description_from_string(C.CString("Sans 10"))
 	C.pango_layout_set_font_description(W.Layout, FontDesc)
+
+	W.AttrList = C.pango_attr_list_new()
 
 	return W, nil
 }
@@ -109,9 +112,19 @@ func RedrawWindow(W XWindow) {
 	C.XSetForeground(W.Display, W.GraphicsContext, 0x303030)
 	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-20)))
 
+	ParsedText := "                                                                                                                                                                                                                "
+
+	var strptr *C.char = C.CString(ParsedText)
+
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
-		C.pango_layout_set_text(W.Layout, C.CString(t), -1)
+
+		C.pango_parse_markup(C.CString(t), -1, 0,
+			&W.AttrList,
+			&strptr, nil, nil)
+
+		C.pango_layout_set_attributes(W.Layout, W.AttrList)
+		C.pango_layout_set_text(W.Layout, strptr, -1)
 		C.pango_layout_get_extents(W.Layout, nil, &Rect)
 
 		_, ry, _, rh := PangoRectToPixels(&Rect)
@@ -135,7 +148,7 @@ func main() {
 		panic(err)
 	}
 
-	getTwitterData(DB)
+	//getTwitterData(DB)
 	tweetsList, err = regenerateViewData(DB, 20)
 	if err != nil {
 		panic(err)
@@ -166,15 +179,16 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 	var Result []string
 
 	for _, t := range tweets {
-		text := t.User.Name
+		var text string
 		if t.RetweetedStatus != nil {
-			text += " -Retweeted- "
-			text += t.RetweetedStatus.User.Name + " -- " + t.RetweetedStatus.Text
+			text = "<i><small>" + html.UnescapeString(t.User.Name) + "</small></i> ⇄ <b>" +
+				t.RetweetedStatus.User.Name + "</b>\n" +
+				html.UnescapeString(t.RetweetedStatus.Text)
 
 		} else {
-			text += " -- " + t.Text
+			text = "<b>" + html.UnescapeString(t.User.Name) + "</b>" + "\n" + html.UnescapeString(t.Text)
 		}
-		Result = append(Result, html.UnescapeString(text))
+		Result = append(Result, text)
 	}
 	return Result, nil
 }
