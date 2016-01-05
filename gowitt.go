@@ -7,6 +7,7 @@ import (
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/boltdb/bolt"
 	"html"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -84,8 +85,6 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	return W, nil
 }
 
-var tweetsList []string
-
 func PixelsToPango(u float64) C.int {
 	return C.pango_units_from_double(C.double(u))
 }
@@ -101,7 +100,7 @@ func PangoRectToPixels(P *C.PangoRectangle) (x, y, w, h float64) {
 		float64(C.pango_units_to_double(P.height))
 }
 
-func RedrawWindow(W XWindow) {
+func RedrawWindow(W XWindow, tweetsList []string) {
 
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
@@ -150,11 +149,11 @@ func main() {
 	}
 
 	//getTwitterData(DB)
-	tweetsList, err = regenerateViewData(DB, 20)
+	tweetsList, err := regenerateViewData(DB, 20)
 	if err != nil {
 		panic(err)
 	}
-	RedrawWindow(window)
+	RedrawWindow(window, tweetsList)
 
 	var report C.XEvent
 	for {
@@ -162,7 +161,7 @@ func main() {
 
 		switch C.getXEventType(report) {
 		case C.Expose:
-			RedrawWindow(window)
+			RedrawWindow(window, tweetsList)
 			fmt.Println("Exposed!")
 
 		case C.KeyPress:
@@ -231,4 +230,23 @@ func getTwitterData(DB *bolt.DB) {
 		}
 	}
 	Tx.Commit()
+}
+
+// Auxiliary function to get original URLs from URL shorteners
+func getRedirectedURL(URL string) (string, error) {
+
+	var Result string
+	c := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			Result = req.URL.String()
+			return errors.New("")
+		}}
+
+	_, err := c.Get(URL)
+
+	if Result != "" {
+		return Result, nil
+	}
+
+	return Result, err
 }
