@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 )
 
 /*
@@ -148,7 +150,7 @@ func main() {
 		panic(err)
 	}
 
-	//getTwitterData(DB)
+	getTwitterData(DB)
 	tweetsList, err := regenerateViewData(DB, 20)
 	if err != nil {
 		panic(err)
@@ -188,6 +190,7 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 		} else {
 			text = "<b>" + html.UnescapeString(t.User.Name) + "</b>" + "\n" + html.UnescapeString(t.Text)
 		}
+		text = replaceURLS(text, func(s string) string { return "<span color='#55E'>" + s + "</span>" })
 		Result = append(Result, text)
 	}
 	return Result, nil
@@ -216,6 +219,27 @@ func getTwitterData(DB *bolt.DB) {
 	Bucket := Tx.Bucket([]byte("tweets"))
 	for _, t := range tweets {
 
+		tweetText := t.Text
+		if t.RetweetedStatus != nil {
+			tweetText = t.RetweetedStatus.Text
+		}
+		tweetText = replaceURLS(tweetText, func(s string) string {
+			fmt.Println("Replacing ", s)
+			for retries := 0; retries < 3; retries++ {
+				newS, err := getRedirectedURL(s)
+				if err != nil {
+					time.Sleep(time.Duration(1+retries) * time.Second)
+					continue
+				}
+				return newS
+			}
+			return s
+		})
+		if t.RetweetedStatus != nil {
+			t.RetweetedStatus.Text = tweetText
+		} else {
+			t.Text = tweetText
+		}
 		data, err := json.Marshal(t)
 		if err != nil {
 			Tx.Rollback()
@@ -249,4 +273,40 @@ func getRedirectedURL(URL string) (string, error) {
 	}
 
 	return Result, err
+}
+
+func replaceURLS(s string, txFunc func(string) string) string {
+
+	var output string
+	for {
+		// Find instances of http(s)://
+		p := strings.Index(s, "http://")
+		if p == -1 {
+			p = strings.Index(s, "https://")
+		}
+
+		// Add non-url text to output string
+		if p == -1 {
+			output += s
+			break
+		}
+
+		if p > 0 {
+			output += s[:p]
+			s = s[p:]
+		}
+
+		// Find where url ends (space or string end)
+		end := strings.Index(s, " ")
+		if end == -1 {
+			end = len(s)
+		}
+
+		// transform url
+		newUrl := txFunc(s[:end])
+		output += newUrl
+		s = s[end:]
+	}
+
+	return output
 }
