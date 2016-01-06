@@ -184,11 +184,11 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 		var text string
 		if t.RetweetedStatus != nil {
 			text = "<i><small>" + html.UnescapeString(t.User.Name) + "</small></i> <span color='#5C5'>⇄</span> <b>" +
-				t.RetweetedStatus.User.Name + "</b>\n" +
+				t.RetweetedStatus.User.Name + "</b> <small>@" + t.RetweetedStatus.User.ScreenName + "</small>\n" +
 				html.UnescapeString(t.RetweetedStatus.Text)
 
 		} else {
-			text = "<b>" + html.UnescapeString(t.User.Name) + "</b>" + "\n" + html.UnescapeString(t.Text)
+			text = "<b>" + html.UnescapeString(t.User.Name) + "</b> <small>@" + t.User.ScreenName + "</small>\n" + html.UnescapeString(t.Text)
 		}
 		text = replaceURLS(text, func(s string) string { return "<span color='#55E'>" + s + "</span>" })
 		Result = append(Result, text)
