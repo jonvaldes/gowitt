@@ -27,6 +27,10 @@ XKeyEvent eventAsKeyEvent(XEvent e){ return e.xkey; }
 */
 import "C"
 
+const UserImageSize = 48
+const UIPadding = 5    // pixels of padding around stuff
+const SmallPadding = 2 // pixels of smaller types of padding
+
 type XWindow struct {
 	Display *C.Display
 	Window  C.Window
@@ -65,8 +69,13 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	C.pango_layout_set_font_description(W.Layout, FontDesc)
 
 	W.AttrList = C.pango_attr_list_new()
+
+	testImage = C.cairo_image_surface_create_from_png(C.CString("test.png"))
+	//fmt.Println(C.GoString(C.cairo_status_to_string(C.cairo_surface_status(testImage))))
 	return W, nil
 }
+
+var testImage *C.cairo_surface_t
 
 func PixelsToPango(u float64) C.int {
 	return C.pango_units_from_double(C.double(u))
@@ -97,7 +106,7 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 	yPos := 10.0
 
 	WindowWidth := Attribs.width
-	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-20)))
+	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-3*UIPadding-UserImageSize)))
 
 	ParsedText := "                                                                                                                                                                                                                "
 
@@ -119,19 +128,27 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 		_, ry, _, rh := PangoRectToPixels(&Rect)
 
 		// Position and add padding
-		ry += yPos - 2
-		rh += 4
+		ry += yPos
+		if rh < UserImageSize+2*UIPadding-UIPadding {
+			rh = UserImageSize + 2*UIPadding
+		} else {
+			rh += UIPadding
+		}
 
 		// Draw rectangle around tweet
 		C.cairo_set_source_rgb(W.Cairo, 0.2, 0.2, 0.2)
-		C.cairo_rectangle(W.Cairo, 5, C.double(ry), C.double(WindowWidth-10), C.double(rh))
+		C.cairo_rectangle(W.Cairo, UIPadding, C.double(ry), C.double(WindowWidth-2*UIPadding), C.double(rh))
 		C.cairo_fill(W.Cairo)
 
+		// Draw user image
+		C.cairo_set_source_surface(W.Cairo, testImage, 2*UIPadding, C.double(yPos+UIPadding))
+		C.cairo_paint(W.Cairo)
+
 		// Draw tweet text
-		C.cairo_move_to(W.Cairo, 10, C.double(yPos))
+		C.cairo_move_to(W.Cairo, 63, C.double(yPos+SmallPadding))
 		C.cairo_set_source_rgb(W.Cairo, 0.95, 0.95, 0.95)
 		C.pango_cairo_show_layout(W.Cairo, W.Layout)
-		yPos += 10 + PangoToPixels(Rect.height)
+		yPos += 5 + rh
 	}
 
 }
