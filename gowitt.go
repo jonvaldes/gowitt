@@ -15,31 +15,28 @@ import (
 )
 
 /*
-#cgo pkg-config: glib-2.0 pango pangoxft
+#cgo pkg-config: glib-2.0 pango pangoxft cairo pangocairo
 #cgo CFLAGS: -I/usr/include/freetype2
 #cgo LDFLAGS: -lX11 -lXft
-#include <X11/Xlib.h>
-#include <X11/Xft/Xft.h>
 #include <pango/pango.h>
-#include <pango/pangoxft.h>
+#include <pango/pangocairo.h>
+#include <cairo/cairo.h>
+#include <cairo/cairo-xlib.h>
 int getXEventType(XEvent e){ return e.type; }
 XKeyEvent eventAsKeyEvent(XEvent e){ return e.xkey; }
-int getDefaultScreen(Display * d){ return DefaultScreen(d); }
-FcChar8* stringAsUtf8(const char * s){ return (FcChar8*)(s);}
 */
 import "C"
 
 type XWindow struct {
-	Display         *C.Display
-	Window          C.Window
-	GraphicsContext C.GC
-	// --
-	FontDraw   *C.XftDraw
-	ColorBlack C.XftColor
+	Display *C.Display
+	Window  C.Window
 	// -- Pango
 	PangoContext *C.PangoContext
 	Layout       *C.PangoLayout
 	AttrList     *C.PangoAttrList
+	// Cairo
+	Cairo   *C.cairo_t
+	Surface *C.cairo_surface_t
 }
 
 func CreateXWindow(width, height int) (XWindow, error) {
@@ -49,41 +46,25 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	if W.Display == nil {
 		return XWindow{}, errors.New("Can't open display")
 	}
-	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 1, 1, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
+	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 0, 0, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
 	C.XMapWindow(W.Display, W.Window)
 	C.XStoreName(W.Display, W.Window, C.CString("gowitt"))
+
+	C.XSelectInput(W.Display, W.Window, C.ExposureMask|C.KeyPressMask|C.ButtonPressMask|C.StructureNotifyMask)
 	C.XFlush(W.Display)
 
-	C.XSelectInput(W.Display, W.Window, C.ExposureMask|C.KeyPressMask|C.ButtonPressMask)
-
-	// Create graphics context
-	var valuemask C.ulong = C.GCCapStyle | C.GCJoinStyle
-	var values C.XGCValues
-	values.cap_style = C.CapButt
-	values.join_style = C.JoinBevel
-	W.GraphicsContext = C.XCreateGC(W.Display, C.Drawable(W.Window), valuemask, &values)
-	if W.GraphicsContext == nil {
-		return XWindow{}, errors.New("Could not create graphics context")
-	}
-
-	// Load Xft
-	W.FontDraw = C.XftDrawCreate(W.Display, C.Drawable(W.Window), C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0))
-
-	var color C.XRenderColor
-	color.red = 0xCFFF
-	color.green = 0xCFFF
-	color.blue = 0xCFFF
-	color.alpha = 65535
-	C.XftColorAllocValue(W.Display, C.XDefaultVisual(W.Display, 0), C.XDefaultColormap(W.Display, 0), &color, &W.ColorBlack)
+	// Cairo
+	W.Surface = C.cairo_xlib_surface_create(W.Display, C.Drawable(W.Window), C.XDefaultVisual(W.Display, 0), C.int(width), C.int(height))
+	C.cairo_xlib_surface_set_size(W.Surface, C.int(width), C.int(height))
+	W.Cairo = C.cairo_create(W.Surface)
 
 	// Pango
-	W.PangoContext = C.pango_xft_get_context(W.Display, 0)
-	W.Layout = C.pango_layout_new(W.PangoContext)
+	W.PangoContext = C.pango_cairo_create_context(W.Cairo)
+	W.Layout = C.pango_cairo_create_layout(W.Cairo)
 	FontDesc := C.pango_font_description_from_string(C.CString("Sans 10"))
 	C.pango_layout_set_font_description(W.Layout, FontDesc)
 
 	W.AttrList = C.pango_attr_list_new()
-
 	return W, nil
 }
 
@@ -106,12 +87,16 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
+	// TODO -- do this only when window resizes
+	C.cairo_xlib_surface_set_size(W.Surface, Attribs.width, Attribs.height)
+
+	C.cairo_set_source_rgb(W.Cairo, 0.1, 0.1, 0.1)
+	C.cairo_paint(W.Cairo)
 
 	var Rect C.PangoRectangle
 	yPos := 10.0
 
 	WindowWidth := Attribs.width
-	C.XSetForeground(W.Display, W.GraphicsContext, 0x303030)
 	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-20)))
 
 	ParsedText := "                                                                                                                                                                                                                "
@@ -121,6 +106,7 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
 
+		// Generate tweet layout
 		C.pango_parse_markup(C.CString(t), -1, 0,
 			&W.AttrList,
 			&strptr, nil, nil)
@@ -129,14 +115,25 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 		C.pango_layout_set_text(W.Layout, strptr, -1)
 		C.pango_layout_get_extents(W.Layout, nil, &Rect)
 
+		// Get tweet text size
 		_, ry, _, rh := PangoRectToPixels(&Rect)
+
+		// Position and add padding
 		ry += yPos - 2
 		rh += 4
-		C.XFillRectangle(W.Display, C.Drawable(W.Window), W.GraphicsContext, 5, C.int(ry), C.uint(WindowWidth-10), C.uint(rh))
 
-		C.pango_xft_render_layout(W.FontDraw, &W.ColorBlack, W.Layout, C.int(PixelsToPango(10)), C.int(PixelsToPango(yPos)))
+		// Draw rectangle around tweet
+		C.cairo_set_source_rgb(W.Cairo, 0.2, 0.2, 0.2)
+		C.cairo_rectangle(W.Cairo, 5, C.double(ry), C.double(WindowWidth-10), C.double(rh))
+		C.cairo_fill(W.Cairo)
+
+		// Draw tweet text
+		C.cairo_move_to(W.Cairo, 10, C.double(yPos))
+		C.cairo_set_source_rgb(W.Cairo, 0.95, 0.95, 0.95)
+		C.pango_cairo_show_layout(W.Cairo, W.Layout)
 		yPos += 10 + PangoToPixels(Rect.height)
 	}
+
 }
 
 func main() {
@@ -145,12 +142,15 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	defer C.XCloseDisplay(window.Display)
+
 	DB, err := initDB()
 	if err != nil {
 		panic(err)
 	}
 
-	getTwitterData(DB)
+	//getTwitterData(DB)
 	tweetsList, err := regenerateViewData(DB, 20)
 	if err != nil {
 		panic(err)
@@ -169,6 +169,10 @@ func main() {
 		case C.KeyPress:
 			ke := C.eventAsKeyEvent(report)
 			fmt.Println("Key pressed", ke.keycode)
+		case C.ResizeRequest:
+			fmt.Println("Resizing")
+			return
+
 		}
 	}
 }
@@ -220,9 +224,12 @@ func getTwitterData(DB *bolt.DB) {
 	for _, t := range tweets {
 
 		tweetText := t.Text
+		userImageUrl := t.User.ProfileImageURL
 		if t.RetweetedStatus != nil {
 			tweetText = t.RetweetedStatus.Text
+			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
 		}
+		fmt.Println(userImageUrl)
 		tweetText = replaceURLS(tweetText, func(s string) string {
 			fmt.Println("Replacing ", s)
 			for retries := 0; retries < 3; retries++ {
