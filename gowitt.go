@@ -24,6 +24,7 @@ import (
 #include <cairo/cairo-xlib.h>
 int getXEventType(XEvent e){ return e.type; }
 XKeyEvent eventAsKeyEvent(XEvent e){ return e.xkey; }
+long clientMessageType(XEvent e) { return e.xclient.data.l[0]; }
 */
 import "C"
 
@@ -54,7 +55,7 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	C.XMapWindow(W.Display, W.Window)
 	C.XStoreName(W.Display, W.Window, C.CString("gowitt"))
 
-	C.XSelectInput(W.Display, W.Window, C.ExposureMask|C.KeyPressMask|C.ButtonPressMask|C.StructureNotifyMask)
+	C.XSelectInput(W.Display, W.Window, C.ExposureMask|C.KeyPressMask|C.ButtonPressMask)
 	C.XFlush(W.Display)
 
 	// Cairo
@@ -96,7 +97,7 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
-	// TODO -- do this only when window resizes
+	// TODO -- Do this only when resizing?
 	C.cairo_xlib_surface_set_size(W.Surface, Attribs.width, Attribs.height)
 
 	C.cairo_set_source_rgb(W.Cairo, 0.1, 0.1, 0.1)
@@ -172,24 +173,25 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	RedrawWindow(window, tweetsList)
 
-	var report C.XEvent
+	wmDeleteMessage := C.XInternAtom(window.Display, C.CString("WM_DELETE_WINDOW"), 0)
+	C.XSetWMProtocols(window.Display, window.Window, &wmDeleteMessage, 1)
+	var event C.XEvent
 	for {
-		C.XNextEvent(window.Display, &report)
+		C.XNextEvent(window.Display, &event)
 
-		switch C.getXEventType(report) {
+		switch C.getXEventType(event) {
 		case C.Expose:
 			RedrawWindow(window, tweetsList)
 			fmt.Println("Exposed!")
 
 		case C.KeyPress:
-			ke := C.eventAsKeyEvent(report)
+			ke := C.eventAsKeyEvent(event)
 			fmt.Println("Key pressed", ke.keycode)
-		case C.ResizeRequest:
-			fmt.Println("Resizing")
-			return
-
+		case C.ClientMessage:
+			if C.clientMessageType(event) == C.long(wmDeleteMessage) {
+				return
+			}
 		}
 	}
 }
