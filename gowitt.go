@@ -15,9 +15,8 @@ import (
 )
 
 /*
-#cgo pkg-config: glib-2.0 pango pangoxft cairo pangocairo
-#cgo CFLAGS: -I/usr/include/freetype2
-#cgo LDFLAGS: -lX11 -lXft
+#cgo pkg-config: pangocairo
+#cgo LDFLAGS: -lX11
 #include <pango/pango.h>
 #include <pango/pangocairo.h>
 #include <cairo/cairo.h>
@@ -52,6 +51,7 @@ func CreateXWindow(width, height int) (XWindow, error) {
 		return XWindow{}, errors.New("Can't open display")
 	}
 	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 0, 0, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
+	C.XSetWindowBackgroundPixmap(W.Display, W.Window, 0) // This avoids flickering on resize
 	C.XMapWindow(W.Display, W.Window)
 	C.XStoreName(W.Display, W.Window, C.CString("gowitt"))
 
@@ -183,8 +183,6 @@ func main() {
 		switch C.getXEventType(event) {
 		case C.Expose:
 			RedrawWindow(window, tweetsList)
-			fmt.Println("Exposed!")
-
 		case C.KeyPress:
 			ke := C.eventAsKeyEvent(event)
 			fmt.Println("Key pressed", ke.keycode)
