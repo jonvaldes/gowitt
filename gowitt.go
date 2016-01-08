@@ -110,22 +110,23 @@ func RedrawWindow(W *XWindow, tweetsList []string) {
 	yPos := 10.0 + W.Scroll
 
 	WindowWidth := Attribs.width
-	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-3*UIPadding-UserImageSize)))
+	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-5*UIPadding-UserImageSize)))
 
-	ParsedText := "                                                                                                                                                                                                                "
-
-	var strptr *C.char = C.CString(ParsedText)
+	outputText := [1024]C.char{}
 
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
 
+		var strippedText *C.char = &outputText[0]
 		// Generate tweet layout
-		C.pango_parse_markup(C.CString(t), -1, 0,
+		if C.pango_parse_markup(C.CString(t), -1, 0,
 			&W.AttrList,
-			&strptr, nil, nil)
+			&strippedText, nil, nil) != 1 {
+			fmt.Println("error parsing", t)
+		}
 
 		C.pango_layout_set_attributes(W.Layout, W.AttrList)
-		C.pango_layout_set_text(W.Layout, strptr, -1)
+		C.pango_layout_set_text(W.Layout, strippedText, -1)
 		C.pango_layout_get_extents(W.Layout, nil, &Rect)
 
 		// Get tweet text size
@@ -205,7 +206,6 @@ func main() {
 					window.Scroll += 10
 				case 5: // scroll down
 					window.Scroll -= 10
-
 				}
 				pendingRedraws = true
 			case C.ClientMessage:
@@ -230,13 +230,14 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 	for _, t := range tweets {
 		var text string
 		if t.RetweetedStatus != nil {
-			text = "<i><small>" + html.UnescapeString(t.User.Name) + "</small></i> <span color='#5C5'>⇄</span> <b>" +
+			text = "<i><small>" + html.EscapeString(t.User.Name) + "</small></i> <span color='#5C5'>⇄</span> <b>" +
 				t.RetweetedStatus.User.Name + "</b> <small>@" + t.RetweetedStatus.User.ScreenName + "</small>\n" +
-				html.UnescapeString(t.RetweetedStatus.Text)
+				html.EscapeString(t.RetweetedStatus.Text)
 
 		} else {
-			text = "<b>" + html.UnescapeString(t.User.Name) + "</b> <small>@" + t.User.ScreenName + "</small>\n" + html.UnescapeString(t.Text)
+			text = "<b>" + html.EscapeString(t.User.Name) + "</b> <small>@" + t.User.ScreenName + "</small>\n" + html.EscapeString(t.Text)
 		}
+		text = strings.Replace(text, "&amp;", "&", -1)
 		text = replaceURLS(text, func(s string) string { return "<span color='#55E'>" + s + "</span>" })
 		Result = append(Result, text)
 	}
@@ -325,6 +326,7 @@ func getRedirectedURL(URL string) (string, error) {
 	return Result, err
 }
 
+// Replace all urls found in input string with the output of the supplied function
 func replaceURLS(s string, txFunc func(string) string) string {
 
 	var output string
