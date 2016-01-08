@@ -75,14 +75,14 @@ func CreateXWindow(width, height int) (XWindow, error) {
 
 	W.AttrList = C.pango_attr_list_new()
 
-	testImage = C.cairo_image_surface_create_from_png(C.CString("test.png"))
-	//fmt.Println(C.GoString(C.cairo_status_to_string(C.cairo_surface_status(testImage))))
+	placeholderImage = C.cairo_image_surface_create_from_png(C.CString("test.png"))
+	//fmt.Println(C.GoString(C.cairo_status_to_string(C.cairo_surface_status(placeholderImage))))
 
 	W.UserImages = NewImageCache()
 	return W, nil
 }
 
-var testImage *C.cairo_surface_t
+var placeholderImage *C.cairo_surface_t
 
 func PixelsToPango(u float64) C.int {
 	return C.pango_units_from_double(C.double(u))
@@ -155,8 +155,11 @@ func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
 		C.cairo_fill(W.Cairo)
 
 		// Draw user image
-		_ = GetCachedImage(W.UserImages, t.UserImage)
-		C.cairo_set_source_surface(W.Cairo, testImage, 2*UIPadding, C.double(yPos+UIPadding))
+		userImage := GetCachedImage(W.UserImages, t.UserImage)
+		if userImage == nil || C.cairo_surface_status(userImage) != C.CAIRO_STATUS_SUCCESS {
+			userImage = placeholderImage
+		}
+		C.cairo_set_source_surface(W.Cairo, userImage, 2*UIPadding, C.double(yPos+UIPadding))
 		C.cairo_paint(W.Cairo)
 
 		// Draw tweet text
@@ -183,7 +186,7 @@ func main() {
 	}
 
 	//getTwitterData(DB)
-	tweetsList, err := regenerateViewData(DB, 20)
+	tweetsList, err := regenerateViewData(&window, DB, 20)
 	if err != nil {
 		panic(err)
 	}
@@ -193,8 +196,10 @@ func main() {
 	var event C.XEvent
 	for {
 		pendingRedraws := false
-		for C.XPending(window.Display) != 0 {
+		processedOneEvent := false
+		for !processedOneEvent || C.XPending(window.Display) != 0 {
 			C.XNextEvent(window.Display, &event)
+			processedOneEvent = true
 
 			switch C.getXEventType(event) {
 			case C.Expose:
@@ -230,7 +235,7 @@ func main() {
 	}
 }
 
-func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]TweetInfo, error) {
+func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]TweetInfo, error) {
 	tweets, err := getLastNTweets(DB, MaxTweets)
 	if err != nil {
 		return []TweetInfo{}, err
@@ -254,7 +259,9 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]TweetInfo, error) {
 		if t.RetweetedStatus != nil {
 			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
 		}
-		fmt.Println(userImageUrl)
+
+		// Pre-cache the user images
+		_ = GetCachedImage(W.UserImages, userImageUrl)
 
 		Result = append(Result, TweetInfo{text, userImageUrl})
 	}
