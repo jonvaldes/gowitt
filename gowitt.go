@@ -23,6 +23,7 @@ import (
 #include <cairo/cairo-xlib.h>
 int getXEventType(XEvent e){ return e.type; }
 XKeyEvent eventAsKeyEvent(XEvent e){ return e.xkey; }
+XButtonEvent eventAsButtonEvent(XEvent e){ return e.xbutton; }
 long clientMessageType(XEvent e) { return e.xclient.data.l[0]; }
 */
 import "C"
@@ -41,6 +42,8 @@ type XWindow struct {
 	// Cairo
 	Cairo   *C.cairo_t
 	Surface *C.cairo_surface_t
+	//
+	Scroll float64
 }
 
 func CreateXWindow(width, height int) (XWindow, error) {
@@ -93,7 +96,7 @@ func PangoRectToPixels(P *C.PangoRectangle) (x, y, w, h float64) {
 		float64(C.pango_units_to_double(P.height))
 }
 
-func RedrawWindow(W XWindow, tweetsList []string) {
+func RedrawWindow(W *XWindow, tweetsList []string) {
 
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
@@ -104,7 +107,7 @@ func RedrawWindow(W XWindow, tweetsList []string) {
 	C.cairo_paint(W.Cairo)
 
 	var Rect C.PangoRectangle
-	yPos := 10.0
+	yPos := 10.0 + W.Scroll
 
 	WindowWidth := Attribs.width
 	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-3*UIPadding-UserImageSize)))
@@ -178,18 +181,41 @@ func main() {
 	C.XSetWMProtocols(window.Display, window.Window, &wmDeleteMessage, 1)
 	var event C.XEvent
 	for {
-		C.XNextEvent(window.Display, &event)
+		pendingRedraws := false
+		for C.XPending(window.Display) != 0 {
+			C.XNextEvent(window.Display, &event)
 
-		switch C.getXEventType(event) {
-		case C.Expose:
-			RedrawWindow(window, tweetsList)
-		case C.KeyPress:
-			ke := C.eventAsKeyEvent(event)
-			fmt.Println("Key pressed", ke.keycode)
-		case C.ClientMessage:
-			if C.clientMessageType(event) == C.long(wmDeleteMessage) {
-				return
+			switch C.getXEventType(event) {
+			case C.Expose:
+				pendingRedraws = true
+			case C.KeyPress:
+				ke := C.eventAsKeyEvent(event)
+				//fmt.Println("Key pressed", ke.keycode)
+				switch ke.keycode {
+				case 116: // down
+					window.Scroll -= 10
+				case 111: // up
+					window.Scroll += 10
+				}
+				pendingRedraws = true
+			case C.ButtonPress:
+				b := C.eventAsButtonEvent(event)
+				switch b.button {
+				case 4: // scroll up
+					window.Scroll += 10
+				case 5: // scroll down
+					window.Scroll -= 10
+
+				}
+				pendingRedraws = true
+			case C.ClientMessage:
+				if C.clientMessageType(event) == C.long(wmDeleteMessage) {
+					return
+				}
 			}
+		}
+		if pendingRedraws {
+			RedrawWindow(&window, tweetsList)
 		}
 	}
 }
