@@ -43,7 +43,8 @@ type XWindow struct {
 	Cairo   *C.cairo_t
 	Surface *C.cairo_surface_t
 	//
-	Scroll float64
+	Scroll     float64
+	UserImages *ImageCache
 }
 
 func CreateXWindow(width, height int) (XWindow, error) {
@@ -76,6 +77,8 @@ func CreateXWindow(width, height int) (XWindow, error) {
 
 	testImage = C.cairo_image_surface_create_from_png(C.CString("test.png"))
 	//fmt.Println(C.GoString(C.cairo_status_to_string(C.cairo_surface_status(testImage))))
+
+	W.UserImages = NewImageCache()
 	return W, nil
 }
 
@@ -96,7 +99,12 @@ func PangoRectToPixels(P *C.PangoRectangle) (x, y, w, h float64) {
 		float64(C.pango_units_to_double(P.height))
 }
 
-func RedrawWindow(W *XWindow, tweetsList []string) {
+type TweetInfo struct {
+	Text      string
+	UserImage string
+}
+
+func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
 
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
@@ -112,17 +120,18 @@ func RedrawWindow(W *XWindow, tweetsList []string) {
 	WindowWidth := Attribs.width
 	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-5*UIPadding-UserImageSize)))
 
-	outputText := [1024]C.char{}
+	errorText := "[[INTERNAL ERROR, COULD NOT PROCESS TWEET]]"
 
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
 
-		var strippedText *C.char = &outputText[0]
+		var strippedText *C.char = nil //&outputText[0]
 		// Generate tweet layout
-		if C.pango_parse_markup(C.CString(t), -1, 0,
+		if C.pango_parse_markup(C.CString(t.Text), -1, 0,
 			&W.AttrList,
 			&strippedText, nil, nil) != 1 {
-			fmt.Println("error parsing", t)
+			fmt.Println("error parsing", t.Text)
+			strippedText = C.CString(errorText)
 		}
 
 		C.pango_layout_set_attributes(W.Layout, W.AttrList)
@@ -146,6 +155,7 @@ func RedrawWindow(W *XWindow, tweetsList []string) {
 		C.cairo_fill(W.Cairo)
 
 		// Draw user image
+		_ = GetCachedImage(W.UserImages, t.UserImage)
 		C.cairo_set_source_surface(W.Cairo, testImage, 2*UIPadding, C.double(yPos+UIPadding))
 		C.cairo_paint(W.Cairo)
 
@@ -220,12 +230,12 @@ func main() {
 	}
 }
 
-func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
+func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]TweetInfo, error) {
 	tweets, err := getLastNTweets(DB, MaxTweets)
 	if err != nil {
-		return []string{}, err
+		return []TweetInfo{}, err
 	}
-	var Result []string
+	var Result []TweetInfo
 
 	for _, t := range tweets {
 		var text string
@@ -239,7 +249,14 @@ func regenerateViewData(DB *bolt.DB, MaxTweets int) ([]string, error) {
 		}
 		text = strings.Replace(text, "&amp;", "&", -1)
 		text = replaceURLS(text, func(s string) string { return "<span color='#55E'>" + s + "</span>" })
-		Result = append(Result, text)
+
+		userImageUrl := t.User.ProfileImageURL
+		if t.RetweetedStatus != nil {
+			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
+		}
+		fmt.Println(userImageUrl)
+
+		Result = append(Result, TweetInfo{text, userImageUrl})
 	}
 	return Result, nil
 }
@@ -268,12 +285,9 @@ func getTwitterData(DB *bolt.DB) {
 	for _, t := range tweets {
 
 		tweetText := t.Text
-		userImageUrl := t.User.ProfileImageURL
 		if t.RetweetedStatus != nil {
 			tweetText = t.RetweetedStatus.Text
-			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
 		}
-		fmt.Println(userImageUrl)
 		tweetText = replaceURLS(tweetText, func(s string) string {
 			fmt.Println("Replacing ", s)
 			for retries := 0; retries < 3; retries++ {
