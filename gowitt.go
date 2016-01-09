@@ -8,7 +8,6 @@ TODO:
 	- Do UI interaction (IMGUI-style maybe?)
 	- The image cache doesn't yet evict old images when new ones come in
 	- Add tweet time
-	- Add favorite and retweet buttons
 	- Proper error-handling everywhere
 
 Known issues:
@@ -286,7 +285,8 @@ func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]TweetInfo, er
 			text = "<b>" + html.EscapeString(t.User.Name) + "</b> <small>@" + t.User.ScreenName + "</small>\n" + html.EscapeString(t.Text)
 		}
 		text = strings.Replace(text, "&amp;", "&", -1)
-		text = replaceURLS(text, func(s string) string { return "<span color='#55E'>" + s + "</span>" })
+		text = replaceURLS(text, func(s string) string { return "<span color='#88F'>" + s + "</span>" })
+		text += "\n<span size='x-large' color='#777'>↶     ❤     ⇄     …</span>"
 
 		userImageUrl := t.User.ProfileImageURL
 		if t.RetweetedStatus != nil {
