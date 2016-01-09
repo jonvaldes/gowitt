@@ -24,7 +24,7 @@ import (
 
 import _ "image/jpeg"
 
-const DownloadGoroutines = 5
+const DownloadGoroutines = 3
 
 type CacheNode struct {
 	LastUsed    int64
@@ -44,8 +44,9 @@ type ImageCache struct {
 	sync.Mutex
 	Cache map[string]CacheNode
 
-	URLRequests chan string
-	Downloads   chan ImageInfo
+	URLRequests        chan string
+	Downloads          chan ImageInfo
+	ImageAddedCallback func()
 }
 
 func loadImage(path string) (image.Image, error) {
@@ -176,19 +177,19 @@ func imageAdder(ic *ImageCache) {
 		}
 		ic.Unlock()
 
-		fmt.Println("Added", info.URL)
-		// TODO -- trigger redraw
+		ic.ImageAddedCallback()
 		// TODO -- keep track of when was each image used
 		// TODO -- remove oldest-used images when cache fills up
 	}
 }
 
-func NewImageCache() *ImageCache {
+func NewImageCache(imageAddedCallback func()) *ImageCache {
 
 	var Result ImageCache
 	Result.URLRequests = make(chan string, 20)
 	Result.Downloads = make(chan ImageInfo, 20)
 	Result.Cache = make(map[string]CacheNode)
+	Result.ImageAddedCallback = imageAddedCallback
 
 	for i := 0; i < DownloadGoroutines; i++ {
 		go imageDownloader(Result.URLRequests, Result.Downloads)

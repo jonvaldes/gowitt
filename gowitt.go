@@ -1,5 +1,27 @@
 package main
 
+/*
+TODO:
+	- Implement correct scrolling
+	- Stream tweets from the DB when scrolling up or down
+	- Asynchronous twitter timeline updating
+	- Do UI interaction (IMGUI-style maybe?)
+	- The image cache doesn't yet evict old images when new ones come in
+	- Add tweet time
+	- Add favorite and retweet buttons
+	- Proper error-handling everywhere
+
+Known issues:
+	- The UI freezes when images are downloaded in the background, even though system is
+	architected so it's should never block. Which I guess means it's blocking somewhere
+	inside X11...
+	- The image cache doesn't yet evict old images when new ones come in
+	- Images are never removed from the cache directory
+	- Cairo surface is resized on every redraw. I think it should only do that upon
+	window resize
+
+*/
+
 import (
 	"encoding/json"
 	"errors"
@@ -12,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 /*
@@ -47,12 +70,14 @@ type XWindow struct {
 	UserImages *ImageCache
 }
 
-func CreateXWindow(width, height int) (XWindow, error) {
-	var W XWindow
+func CreateXWindow(width, height int) (*XWindow, error) {
+	C.XInitThreads()
+
+	W := &XWindow{}
 
 	W.Display = C.XOpenDisplay(nil)
 	if W.Display == nil {
-		return XWindow{}, errors.New("Can't open display")
+		return &XWindow{}, errors.New("Can't open display")
 	}
 	W.Window = C.XCreateSimpleWindow(W.Display, C.XDefaultRootWindow(W.Display), 0, 0, C.uint(width), C.uint(height), 0, 0, 0xFF151515)
 	C.XSetWindowBackgroundPixmap(W.Display, W.Window, 0) // This avoids flickering on resize
@@ -76,9 +101,19 @@ func CreateXWindow(width, height int) (XWindow, error) {
 	W.AttrList = C.pango_attr_list_new()
 
 	placeholderImage = C.cairo_image_surface_create_from_png(C.CString("test.png"))
-	//fmt.Println(C.GoString(C.cairo_status_to_string(C.cairo_surface_status(placeholderImage))))
 
-	W.UserImages = NewImageCache()
+	W.UserImages = NewImageCache(func() {
+		var ev C.XEvent
+		exev := (*C.XExposeEvent)(unsafe.Pointer(&ev))
+		exev._type = C.Expose
+		exev.count = 0
+		exev.window = W.Window
+		exev.send_event = 1
+		exev.display = W.Display
+
+		C.XSendEvent(W.Display, W.Window, 0, C.ExposureMask, &ev)
+		C.XFlush(W.Display)
+	})
 	return W, nil
 }
 
@@ -105,7 +140,6 @@ type TweetInfo struct {
 }
 
 func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
-
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
 	// TODO -- Do this only when resizing?
@@ -168,7 +202,6 @@ func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
 		C.pango_cairo_show_layout(W.Cairo, W.Layout)
 		yPos += 5 + rh
 	}
-
 }
 
 func main() {
@@ -185,8 +218,8 @@ func main() {
 		panic(err)
 	}
 
-	//getTwitterData(DB)
-	tweetsList, err := regenerateViewData(&window, DB, 20)
+	getTwitterData(DB)
+	tweetsList, err := regenerateViewData(window, DB, 20)
 	if err != nil {
 		panic(err)
 	}
@@ -230,7 +263,7 @@ func main() {
 			}
 		}
 		if pendingRedraws {
-			RedrawWindow(&window, tweetsList)
+			RedrawWindow(window, tweetsList)
 		}
 	}
 }
@@ -259,9 +292,6 @@ func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]TweetInfo, er
 		if t.RetweetedStatus != nil {
 			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
 		}
-
-		// Pre-cache the user images
-		_ = GetCachedImage(W.UserImages, userImageUrl)
 
 		Result = append(Result, TweetInfo{text, userImageUrl})
 	}
