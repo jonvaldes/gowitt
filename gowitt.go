@@ -3,6 +3,7 @@ package main
 /*
 TODO:
 	- Implement correct scrolling
+	- Display new tweets before replacing shortened urls, then expand urls as they arrive
 	- Stream tweets from the DB when scrolling up or down
 	- Asynchronous twitter timeline updating
 	- Do UI interaction (IMGUI-style maybe?)
@@ -138,7 +139,7 @@ type TweetInfo struct {
 	UserImage string
 }
 
-func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
+func RedrawWindow(W *XWindow, tweetsList []TweetInfo, mouseClick [2]int) {
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
 	// TODO -- Do this only when resizing?
@@ -186,6 +187,9 @@ func RedrawWindow(W *XWindow, tweetsList []TweetInfo) {
 		C.cairo_set_source_rgb(W.Cairo, 0.2, 0.2, 0.2)
 		C.cairo_rectangle(W.Cairo, UIPadding, C.double(ry), C.double(WindowWidth-2*UIPadding), C.double(rh))
 		C.cairo_fill(W.Cairo)
+		if mouseClick[0] >= UIPadding && float64(mouseClick[1]) >= ry && float64(mouseClick[1]) <= ry+rh {
+			fmt.Println("Clicked tweet", t.Text)
+		}
 
 		// Draw user image
 		userImage := GetCachedImage(W.UserImages, t.UserImage)
@@ -225,6 +229,7 @@ func main() {
 
 	wmDeleteMessage := C.XInternAtom(window.Display, C.CString("WM_DELETE_WINDOW"), 0)
 	C.XSetWMProtocols(window.Display, window.Window, &wmDeleteMessage, 1)
+	mouseClick := [2]int{-1, -1}
 	var event C.XEvent
 	for {
 		pendingRedraws := false
@@ -253,6 +258,11 @@ func main() {
 					window.Scroll += 10
 				case 5: // scroll down
 					window.Scroll -= 10
+				case 1:
+					// left mouse down
+					butEv := (*C.XButtonEvent)(unsafe.Pointer(&event))
+					mouseClick[0] = int(butEv.x)
+					mouseClick[1] = int(butEv.y)
 				}
 				pendingRedraws = true
 			case C.ClientMessage:
@@ -262,7 +272,9 @@ func main() {
 			}
 		}
 		if pendingRedraws {
-			RedrawWindow(window, tweetsList)
+			RedrawWindow(window, tweetsList, mouseClick)
+			mouseClick[0] = -1
+			mouseClick[1] = -1
 		}
 	}
 }
@@ -286,7 +298,40 @@ func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]TweetInfo, er
 		}
 		text = strings.Replace(text, "&amp;", "&", -1)
 		text = replaceURLS(text, func(s string) string { return "<span color='#88F'>" + s + "</span>" })
-		text += "\n<span size='x-large' color='#777'>↶     ❤     ⇄     …</span>"
+		text += "\n<span size='x-large' color='#777'>↶     "
+
+		// Add favorite icon
+		favoriteColor := "#777"
+		favoriteText := "      "
+		favoriteCount := t.FavoriteCount
+		if t.RetweetedStatus != nil {
+			favoriteCount = t.RetweetedStatus.FavoriteCount
+		}
+		if favoriteCount > 0 {
+			favoriteText = fmt.Sprintf("<span size='medium'> %-4d </span>", favoriteCount)
+		}
+		if t.Favorited {
+			favoriteColor = "#F33"
+		}
+		text += fmt.Sprintf("<span color='%s'>❤</span><span size='medium'>%s</span>", favoriteColor, favoriteText)
+
+		// Add RT icon
+		retweetColor := "#777"
+		retweetText := "      "
+		if t.Retweeted {
+			retweetColor = "#3F3"
+		}
+		retweetCount := t.RetweetCount
+		if t.RetweetedStatus != nil {
+			retweetCount = t.RetweetedStatus.RetweetCount
+		}
+		if retweetCount > 0 {
+			retweetText = fmt.Sprintf("<span size='medium'> %-4d </span>", retweetCount)
+		}
+		text += fmt.Sprintf("<span color='%s'>⇄</span>%s", retweetColor, retweetText)
+
+		// Add "more options" icon
+		text += "<span color='#777'>…</span></span>"
 
 		userImageUrl := t.User.ProfileImageURL
 		if t.RetweetedStatus != nil {
