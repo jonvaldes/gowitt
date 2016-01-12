@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/boltdb/bolt"
-	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -60,14 +59,25 @@ type XWindow struct {
 	Window  C.Window
 	// -- Pango
 	PangoContext *C.PangoContext
-	Layout       *C.PangoLayout
 	AttrList     *C.PangoAttrList
+	FontDesc     *C.PangoFontDescription
 	// Cairo
 	Cairo   *C.cairo_t
 	Surface *C.cairo_surface_t
 	//
 	Scroll     float64
 	UserImages *ImageCache
+}
+
+// The scrolling system works by keeping track of what tweet is the one on the
+// middle of the screen, and scrolling around based on that. Once the center
+// tweet is scrolled far enough to not be the center one anymore, the new
+// center tweet is calculated, and a new scroll position is produced for it.
+// Also, when tweets are streamed in or out, the centertweet value is readjusted
+// so it keeps pointing to the same tweet
+type ScrollPosition struct {
+	CenterTweet int
+	Scroll      float32
 }
 
 func CreateXWindow(width, height int) (*XWindow, error) {
@@ -93,10 +103,9 @@ func CreateXWindow(width, height int) (*XWindow, error) {
 	W.Cairo = C.cairo_create(W.Surface)
 
 	// Pango
+	InitLayoutsCache(W.Cairo)
 	W.PangoContext = C.pango_cairo_create_context(W.Cairo)
-	W.Layout = C.pango_cairo_create_layout(W.Cairo)
-	FontDesc := C.pango_font_description_from_string(C.CString("Sans 10"))
-	C.pango_layout_set_font_description(W.Layout, FontDesc)
+	W.FontDesc = C.pango_font_description_from_string(C.CString("Sans 10"))
 
 	W.AttrList = C.pango_attr_list_new()
 
@@ -134,12 +143,7 @@ func PangoRectToPixels(P *C.PangoRectangle) (x, y, w, h float64) {
 		float64(C.pango_units_to_double(P.height))
 }
 
-type TweetInfo struct {
-	Text      string
-	UserImage string
-}
-
-func RedrawWindow(W *XWindow, tweetsList []TweetInfo, mouseClick [2]int) {
+func RedrawWindow(W *XWindow, tweetsList []*TweetInfo, mouseClick [2]int) {
 	var Attribs C.XWindowAttributes
 	C.XGetWindowAttributes(W.Display, W.Window, &Attribs)
 	// TODO -- Do this only when resizing?
@@ -152,25 +156,14 @@ func RedrawWindow(W *XWindow, tweetsList []TweetInfo, mouseClick [2]int) {
 	yPos := 10.0 + W.Scroll
 
 	WindowWidth := Attribs.width
-	C.pango_layout_set_width(W.Layout, PixelsToPango(float64(WindowWidth-5*UIPadding-UserImageSize)))
 
-	errorText := "[[INTERNAL ERROR, COULD NOT PROCESS TWEET]]"
+	maxTweetWidth := PixelsToPango(float64(WindowWidth - 5*UIPadding - UserImageSize))
 
 	for i := 0; i < len(tweetsList); i++ {
 		t := tweetsList[i]
 
-		var strippedText *C.char = nil //&outputText[0]
-		// Generate tweet layout
-		if C.pango_parse_markup(C.CString(t.Text), -1, 0,
-			&W.AttrList,
-			&strippedText, nil, nil) != 1 {
-			fmt.Println("error parsing", t.Text)
-			strippedText = C.CString(errorText)
-		}
-
-		C.pango_layout_set_attributes(W.Layout, W.AttrList)
-		C.pango_layout_set_text(W.Layout, strippedText, -1)
-		C.pango_layout_get_extents(W.Layout, nil, &Rect)
+		C.pango_layout_set_width(t.Layout, maxTweetWidth)
+		C.pango_layout_get_extents(t.Layout, nil, &Rect)
 
 		// Get tweet text size
 		_, ry, _, rh := PangoRectToPixels(&Rect)
@@ -202,7 +195,7 @@ func RedrawWindow(W *XWindow, tweetsList []TweetInfo, mouseClick [2]int) {
 		// Draw tweet text
 		C.cairo_move_to(W.Cairo, 63, C.double(yPos+SmallPadding))
 		C.cairo_set_source_rgb(W.Cairo, 0.95, 0.95, 0.95)
-		C.pango_cairo_show_layout(W.Cairo, W.Layout)
+		C.pango_cairo_show_layout(W.Cairo, t.Layout)
 		yPos += 5 + rh
 	}
 }
@@ -221,7 +214,7 @@ func main() {
 		panic(err)
 	}
 
-	getTwitterData(DB)
+	//getTwitterData(DB)
 	tweetsList, err := regenerateViewData(window, DB, 20)
 	if err != nil {
 		panic(err)
@@ -279,66 +272,14 @@ func main() {
 	}
 }
 
-func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]TweetInfo, error) {
+func regenerateViewData(W *XWindow, DB *bolt.DB, MaxTweets int) ([]*TweetInfo, error) {
 	tweets, err := getLastNTweets(DB, MaxTweets)
 	if err != nil {
-		return []TweetInfo{}, err
+		return []*TweetInfo{}, err
 	}
-	var Result []TweetInfo
-
-	for _, t := range tweets {
-		var text string
-		if t.RetweetedStatus != nil {
-			text = "<i><small>" + html.EscapeString(t.User.Name) + "</small></i> <span color='#5C5'>⇄</span> <b>" +
-				t.RetweetedStatus.User.Name + "</b> <small>@" + t.RetweetedStatus.User.ScreenName + "</small>\n" +
-				html.EscapeString(t.RetweetedStatus.Text)
-
-		} else {
-			text = "<b>" + html.EscapeString(t.User.Name) + "</b> <small>@" + t.User.ScreenName + "</small>\n" + html.EscapeString(t.Text)
-		}
-		text = strings.Replace(text, "&amp;", "&", -1)
-		text = replaceURLS(text, func(s string) string { return "<span color='#88F'>" + s + "</span>" })
-		text += "\n<span size='x-large' color='#777'>↶     "
-
-		// Add favorite icon
-		favoriteColor := "#777"
-		favoriteText := "      "
-		favoriteCount := t.FavoriteCount
-		if t.RetweetedStatus != nil {
-			favoriteCount = t.RetweetedStatus.FavoriteCount
-		}
-		if favoriteCount > 0 {
-			favoriteText = fmt.Sprintf("<span size='medium'> %-4d </span>", favoriteCount)
-		}
-		if t.Favorited {
-			favoriteColor = "#F33"
-		}
-		text += fmt.Sprintf("<span color='%s'>❤</span><span size='medium'>%s</span>", favoriteColor, favoriteText)
-
-		// Add RT icon
-		retweetColor := "#777"
-		retweetText := "      "
-		if t.Retweeted {
-			retweetColor = "#3F3"
-		}
-		retweetCount := t.RetweetCount
-		if t.RetweetedStatus != nil {
-			retweetCount = t.RetweetedStatus.RetweetCount
-		}
-		if retweetCount > 0 {
-			retweetText = fmt.Sprintf("<span size='medium'> %-4d </span>", retweetCount)
-		}
-		text += fmt.Sprintf("<span color='%s'>⇄</span>%s", retweetColor, retweetText)
-
-		// Add "more options" icon
-		text += "<span color='#777'>…</span></span>"
-
-		userImageUrl := t.User.ProfileImageURL
-		if t.RetweetedStatus != nil {
-			userImageUrl = t.RetweetedStatus.User.ProfileImageURL
-		}
-
-		Result = append(Result, TweetInfo{text, userImageUrl})
+	var Result []*TweetInfo
+	for i := range tweets {
+		Result = append(Result, GenerateTweetInfo(W, &tweets[i]))
 	}
 	return Result, nil
 }
